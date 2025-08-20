@@ -1,0 +1,56 @@
+name: Sync All Releases from Upstream
+
+on:
+  workflow_dispatch:
+    # 手动触发
+  schedule:
+    - cron: "0 3 * * *"   # 每天凌晨 3 点自动执行（UTC）
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget jq gh
+
+      - name: Sync all releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+
+          UPSTREAM_OWNER="twbs"   # 上游用户名 / 组织
+          UPSTREAM_REPO="bootstrap"    # 上游仓库名
+
+          echo "Fetching all releases from $UPSTREAM_OWNER/$UPSTREAM_REPO ..."
+          releases=$(gh api repos/$UPSTREAM_OWNER/$UPSTREAM_REPO/releases --paginate)
+
+          echo "$releases" | jq -c '.[]' | while read release; do
+            tag_name=$(echo "$release" | jq -r .tag_name)
+            echo "Processing release $tag_name ..."
+
+            assets=$(echo "$release" | jq -r '.assets[].browser_download_url')
+
+            mkdir -p release-assets
+            cd release-assets
+
+            for url in $assets; do
+              echo "Downloading $url ..."
+              wget -q $url
+            done
+
+            cd ..
+
+            # 创建 release，如果已经存在就跳过
+            if gh release view "$tag_name" --repo $GITHUB_REPOSITORY >/dev/null 2>&1; then
+              echo "Release $tag_name already exists in fork, skipping..."
+            else
+              echo "Creating release $tag_name in fork ..."
+              gh release create "$tag_name" release-assets/* --repo $GITHUB_REPOSITORY --title "$tag_name" --notes "Synced from upstream"
+            fi
+
+            rm -rf release-assets
+          done
