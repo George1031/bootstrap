@@ -1,68 +1,45 @@
-name: Sync All Releases from Bootstrap
+name: Sync Releases from Upstream
 
 on:
-  workflow_dispatch:   # 手动触发
+  workflow_dispatch:   # 可以手动触发
   schedule:
-    - cron: "0 3 * * *"   # 每天凌晨 3 点自动运行（UTC）
+    - cron: "0 3 * * *"   # 每天凌晨 3 点自动执行（UTC 时间）
 
 jobs:
   sync:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Install dependencies
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install GitHub CLI
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget jq gh
+          sudo apt-get install -y gh jq
 
-      - name: Sync all releases from Bootstrap
+      - name: Download latest release from upstream
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
-
           UPSTREAM_OWNER="twbs"
           UPSTREAM_REPO="bootstrap"
 
-          echo "Fetching all releases from $UPSTREAM_OWNER/$UPSTREAM_REPO ..."
+          # 获取最新 release ID
+          release_info=$(gh api repos/$UPSTREAM_OWNER/$UPSTREAM_REPO/releases/latest)
 
-          # 分页逐条处理 release，避免大 JSON 一次性解析失败
-          gh api repos/$UPSTREAM_OWNER/$UPSTREAM_REPO/releases --paginate \
-            | jq -c '.[]' \
-            | while read release; do
+          tag_name=$(echo "$release_info" | jq -r .tag_name)
+          assets=$(echo "$release_info" | jq -r '.assets[].browser_download_url')
 
-              tag_name=$(echo "$release" | jq -r .tag_name)
-              echo "Processing release $tag_name ..."
+          mkdir release-assets
+          cd release-assets
 
-              # 检查 release 是否已存在
-              if gh release view "$tag_name" --repo $GITHUB_REPOSITORY >/dev/null 2>&1; then
-                echo "Release $tag_name already exists in fork, skipping..."
-                continue
-              fi
+          echo "Downloading assets for release $tag_name ..."
+          for url in $assets; do
+            wget -q $url
+          done
 
-              # 获取 assets，空数组也安全
-              assets=$(echo "$release" | jq -r '.assets[]?.browser_download_url // empty')
+          cd ..
 
-              mkdir -p release-assets
-              cd release-assets
-
-              for url in $assets; do
-                echo "Downloading $url ..."
-                wget -q $url || echo "Warning: failed to download $url, skipping..."
-              done
-
-              cd ..
-
-              # 创建 release（如果有 assets）
-              if [ -n "$(ls -A release-assets 2>/dev/null)" ]; then
-                echo "Creating release $tag_name in fork ..."
-                gh release create "$tag_name" release-assets/* --repo $GITHUB_REPOSITORY --title "$tag_name" --notes "Synced from upstream" \
-                  || echo "Warning: failed to create release $tag_name"
-              else
-                echo "No assets to upload for $tag_name, creating empty release..."
-                gh release create "$tag_name" --repo $GITHUB_REPOSITORY --title "$tag_name" --notes "Synced from upstream"
-              fi
-
-              # 清理
-              rm -rf release-assets
-            done
+          echo "Creating release $tag_name in current repo ..."
+          gh release create "$tag_name" release-assets/* --repo $GITHUB_REPOSITORY --title "$tag_name" --notes "Synced from upstream"
